@@ -1,0 +1,18 @@
+# CraftEngine Bed Addon Configuration
+# This configuration file defines bed furniture properties and behaviors
+# 
+# Reload Configuration:
+#   For /ce and /craftengine commands: these are handled by CraftEngine itself
+#
+beds:
+  single_bed:
+    # Furniture ID must match the ID in your CraftEngine models config
+    furniture-id: furniture:single_bed
+    
+    # Bed block slots (relative to furniture placement position)
+    # Format: "x,y,z" for each slot in the bed
+    # First slot = foot of bed, second slot = head of bed
+    slots:
+      - "0,0,0"      # Foot of bed
+      - "0,0,1"      # Head of bed
+

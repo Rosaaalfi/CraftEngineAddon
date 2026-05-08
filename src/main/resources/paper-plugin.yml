@@ -1,0 +1,13 @@
+name: CraftEngineSleep
+version: "${version}"
+main: me.chyxelmc.ceaddon.CraftEngineSleepPlugin
+api-version: "1.21"
+description: Sleep bed block behavior for CraftEngine using native bed_block type
+authors:
+  - Chyxel
+dependencies:
+  server:
+    CraftEngine:
+      load: BEFORE
+      required: true
+      join-classpath: true

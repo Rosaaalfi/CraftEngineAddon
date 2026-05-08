@@ -1,0 +1,46 @@
+items:
+  furniture:single_bed:
+    data:
+      item-name: <!i>Single Bed
+    model: workshopsix:workshop_six/starter_pack/single_bed
+    behavior:
+      type: furniture_item
+      rules:
+        ground:
+          rotation: four
+          alignment: center
+      furniture:
+        events:
+          - template: default:rotatable_furniture_4
+        settings:
+          item: furniture:single_bed
+          hit-times: 3
+          sounds:
+            break: minecraft:block.bamboo_wood.break
+            place: minecraft:block.bamboo_wood.place
+            hit: minecraft:block.bamboo_wood.hit
+        variants:
+          ground:
+            loot-spawn-offset: 0.5,0.5,0
+            elements:
+              - item: furniture:single_bed
+                display-transform: HEAD
+                billboard: fixed
+                position: 0.5,0,0
+                translation: 0,0.5,0
+                shadow-radius: 1
+                shadow-strength: 0.2
+            hitboxes:
+              - type: interaction
+                can-use-item-on: false
+                can-be-hit-by-projectile: false
+                blocks-building: false
+                position: 0,0,0
+                scale: 0,0
+                interactive: false
+                invisible: false
+
+        loot:
+          template: default:loot_table/furniture
+          arguments:
+            item: furniture:single_bed
