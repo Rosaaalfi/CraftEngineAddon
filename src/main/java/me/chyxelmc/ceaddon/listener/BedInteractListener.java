@@ -4,6 +4,7 @@ import me.chyxelmc.ceaddon.behavior.BedSessionRegistry;
 import me.chyxelmc.ceaddon.behavior.FacingHelper;
 import me.chyxelmc.ceaddon.config.BedAddonConfig;
 import me.chyxelmc.ceaddon.nms.NmsSleepAdapter;
+import me.chyxelmc.ceaddon.persistence.BedDatabase;
 import net.momirealms.craftengine.bukkit.api.CraftEngineFurniture;
 import net.momirealms.craftengine.bukkit.api.event.FurnitureBreakEvent;
 import net.momirealms.craftengine.bukkit.api.event.FurnitureInteractEvent;
@@ -13,11 +14,14 @@ import net.momirealms.craftengine.core.world.Vec3i;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Tag;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.TileState;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -28,22 +32,18 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-
 /**
  * Handles CraftEngine furniture lifecycle and injects real vanilla beds behind the furniture model.
  */
 public final class BedInteractListener implements Listener {
     private final Plugin plugin;
     private BedAddonConfig config;
+    private final BedDatabase database;
 
-    public BedInteractListener(Plugin plugin, BedAddonConfig config) {
+    public BedInteractListener(Plugin plugin, BedAddonConfig config, BedDatabase database) {
         this.plugin = plugin;
         this.config = config;
+        this.database = database;
     }
 
     public void clearTracking() {
@@ -58,6 +58,10 @@ public final class BedInteractListener implements Listener {
     public void onFurniturePlace(FurniturePlaceEvent event) {
         BedAddonConfig.BedDefinition bed = config.getByFurnitureId(event.furniture().id().asString());
         if (bed == null) return;
+        if (!canPlaceAt(event.player(), event.location(), bed)) {
+            event.setCancelled(true);
+            return;
+        }
 
         Bukkit.getScheduler().runTask(plugin, () -> injectBed(event.player(), event.location(), bed));
     }
@@ -99,17 +103,28 @@ public final class BedInteractListener implements Listener {
     public void onFurnitureBreak(FurnitureBreakEvent event) {
         BedAddonConfig.BedDefinition bed = config.getByFurnitureId(event.furniture().id().asString());
         if (bed == null) return;
+        database.removeAt(bed.furnitureId, event.location());
+        database.save();
         // Cleanup bed ditangani di BlockBreakEvent karena sumber aksi utamanya adalah player memecah block bed.
     }
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        // Intentionally empty: do not hide/cull bed blocks from clients.
+        ensureNearbyBeds(event.getPlayer());
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (event.getPlayer().isOnline()) ensureNearbyBeds(event.getPlayer());
+        }, 10L);
     }
 
     @EventHandler
     public void onPlayerMove(PlayerMoveEvent event) {
-        // Intentionally empty: do not hide/cull bed blocks from clients.
+        if (event.getTo() == null) return;
+        int fromChunkX = event.getFrom().getBlockX() >> 4;
+        int fromChunkZ = event.getFrom().getBlockZ() >> 4;
+        int toChunkX = event.getTo().getBlockX() >> 4;
+        int toChunkZ = event.getTo().getBlockZ() >> 4;
+        if (fromChunkX == toChunkX && fromChunkZ == toChunkZ) return;
+        ensureNearbyBeds(event.getPlayer());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
@@ -131,6 +146,9 @@ public final class BedInteractListener implements Listener {
                         new Location(world, block.getX(), block.getY(), block.getZ()),
                         latest.config
                 );
+                BlockPos origin = BlockPos.of(latest.originKey);
+                database.removeAt(latest.config.furnitureId, new Location(world, origin.x(), origin.y(), origin.z()));
+                database.save();
                 removeNearbyFurniture(world, latest, event.getPlayer());
             });
         }
@@ -160,11 +178,19 @@ public final class BedInteractListener implements Listener {
 
         String facing = FacingHelper.yawToDirection(placer.getLocation().getYaw()).name();
         if (NmsSleepAdapter.placeVanillaBed(serverWorld, footPos.x(), footPos.y(), footPos.z(), headPos.x(), headPos.y(), headPos.z(), facing)) {
+            database.upsert(
+                    bed.furnitureId,
+                    location,
+                    facing,
+                    footPos.x(), footPos.y(), footPos.z(),
+                    headPos.x(), headPos.y(), headPos.z()
+            );
+            database.save();
             BedSessionRegistry.register(world.getUID(), origin.asLong(), footPos.asLong(), headPos.asLong(), bed, facing);
             BedSessionRegistry.Session session = BedSessionRegistry.get(world.getUID(), origin.asLong());
             if (session != null) {
-                session.originalFoot = originalFoot;
-                session.originalHead = originalHead;
+                session.originalFoot = Tag.BEDS.isTagged(originalFoot.getType()) ? null : originalFoot;
+                session.originalHead = Tag.BEDS.isTagged(originalHead.getType()) ? null : originalHead;
             }
         }
     }
@@ -185,12 +211,12 @@ public final class BedInteractListener implements Listener {
             BlockPos footPos = BlockPos.of(session.footKey);
             BlockPos headPos = BlockPos.of(session.headKey);
 
-            if (session.originalFoot != null) {
+            if (session.originalFoot != null && !Tag.BEDS.isTagged(session.originalFoot.getType())) {
                 session.originalFoot.update(true, false);
             } else {
                 world.getBlockAt(footPos.x(), footPos.y(), footPos.z()).setType(Material.AIR, false);
             }
-            if (session.originalHead != null) {
+            if (session.originalHead != null && !Tag.BEDS.isTagged(session.originalHead.getType())) {
                 session.originalHead.update(true, false);
             } else {
                 world.getBlockAt(headPos.x(), headPos.y(), headPos.z()).setType(Material.AIR, false);
@@ -269,6 +295,77 @@ public final class BedInteractListener implements Listener {
         if (bukkitObject instanceof CraftWorld craftWorld) return craftWorld.getHandle();
         if (bukkitObject instanceof CraftPlayer craftPlayer) return craftPlayer.getHandle();
         return null;
+    }
+
+    private boolean canPlaceAt(Player placer, Location location, BedAddonConfig.BedDefinition bed) {
+        World world = location.getWorld();
+        if (world == null) return false;
+        var facing = FacingHelper.yawToDirection(placer.getLocation().getYaw());
+        BlockPos origin = new BlockPos(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+
+        for (Vec3i slot : bed.slots) {
+            Vec3i offset = FacingHelper.rotateOffset(slot, facing);
+            BlockPos pos = origin.offset(offset.x(), offset.y(), offset.z());
+            Block block = world.getBlockAt(pos.x(), pos.y(), pos.z());
+            if (!isReplaceableForBed(block)) return false;
+        }
+        return true;
+    }
+
+    private boolean isReplaceableForBed(Block block) {
+        Material type = block.getType();
+        if (type.isAir()) return true;
+        if (block.getState() instanceof TileState) return false;
+        if (Tag.BEDS.isTagged(type)) return true;
+        String name = type.name();
+        if (name.contains("FENCE") || name.contains("WALL")) return false;
+        if (name.contains("TORCH") || name.contains("LANTERN") || name.contains("CHAIN")) return false;
+        if (name.equals("ENCHANTING_TABLE") || name.equals("COMPOSTER")) return false;
+        return false;
+    }
+
+    public void cleanupAllSessionsOnShutdown() {
+        for (BedSessionRegistry.Session session : BedSessionRegistry.sessions()) {
+            World world = Bukkit.getWorld(session.worldId);
+            if (world == null) continue;
+            try {
+                BlockPos footPos = BlockPos.of(session.footKey);
+                BlockPos headPos = BlockPos.of(session.headKey);
+                world.getBlockAt(footPos.x(), footPos.y(), footPos.z()).setType(Material.AIR, false);
+                world.getBlockAt(headPos.x(), headPos.y(), headPos.z()).setType(Material.AIR, false);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void ensureNearbyBeds(Player player) {
+        World world = player.getWorld();
+        int chunkX = player.getLocation().getBlockX() >> 4;
+        int chunkZ = player.getLocation().getBlockZ() >> 4;
+        for (BedDatabase.Entry entry : database.nearChunk(world.getName(), chunkX, chunkZ, 2)) {
+            ensureSessionForEntry(world, entry);
+        }
+    }
+
+    private void ensureSessionForEntry(World world, BedDatabase.Entry entry) {
+        BedAddonConfig.BedDefinition bed = config.getByFurnitureId(entry.furnitureId);
+        if (bed == null) return;
+        long originKey = new BlockPos(entry.x, entry.y, entry.z).asLong();
+        if (BedSessionRegistry.get(world.getUID(), originKey) != null) return;
+        String facing = (entry.facing == null || entry.facing.isBlank())
+                ? FacingHelper.yawToDirection(entry.yaw).name()
+                : entry.facing;
+        BlockPos footPos = new BlockPos(entry.footX, entry.footY, entry.footZ);
+        BlockPos headPos = new BlockPos(entry.headX, entry.headY, entry.headZ);
+
+        Object serverWorld = getHandle(world);
+        if (serverWorld == null) return;
+        if (!Tag.BEDS.isTagged(world.getBlockAt(footPos.x(), footPos.y(), footPos.z()).getType())
+                || !Tag.BEDS.isTagged(world.getBlockAt(headPos.x(), headPos.y(), headPos.z()).getType())) {
+            NmsSleepAdapter.placeVanillaBed(serverWorld, footPos.x(), footPos.y(), footPos.z(), headPos.x(), headPos.y(), headPos.z(), facing);
+        }
+
+        BedSessionRegistry.register(world.getUID(), originKey, footPos.asLong(), headPos.asLong(), bed, facing);
     }
 }
 

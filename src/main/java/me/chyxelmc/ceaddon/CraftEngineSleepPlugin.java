@@ -4,6 +4,7 @@ import me.chyxelmc.ceaddon.config.BedAddonConfig;
 import me.chyxelmc.ceaddon.behavior.BedSessionRegistry;
 import me.chyxelmc.ceaddon.listener.BedInteractListener;
 import me.chyxelmc.ceaddon.listener.PlayerSleepListener;
+import me.chyxelmc.ceaddon.persistence.BedDatabase;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -19,12 +20,15 @@ import java.util.List;
 public final class CraftEngineSleepPlugin extends JavaPlugin implements CommandExecutor, TabCompleter {
     private BedAddonConfig bedAddonConfig;
     private BedInteractListener bedInteractListener;
+    private BedDatabase bedDatabase;
 
     @Override
     public void onEnable() {
         saveDefaultBedAddonConfig();
         this.bedAddonConfig = BedAddonConfig.load(new File(getDataFolder(), "bed-addon.yml"));
-        this.bedInteractListener = new BedInteractListener(this, bedAddonConfig);
+        this.bedDatabase = new BedDatabase(new File(getDataFolder(), "database.yml"));
+        this.bedDatabase.load();
+        this.bedInteractListener = new BedInteractListener(this, bedAddonConfig, bedDatabase);
         getServer().getPluginManager().registerEvents(bedInteractListener, this);
         getServer().getPluginManager().registerEvents(new PlayerSleepListener(), this);
 
@@ -38,6 +42,12 @@ public final class CraftEngineSleepPlugin extends JavaPlugin implements CommandE
 
     @Override
     public void onDisable() {
+        if (bedInteractListener != null) {
+            bedInteractListener.cleanupAllSessionsOnShutdown();
+        }
+        if (bedDatabase != null) {
+            bedDatabase.save();
+        }
         BedSessionRegistry.clear();
         if (bedInteractListener != null) {
             bedInteractListener.clearTracking();
